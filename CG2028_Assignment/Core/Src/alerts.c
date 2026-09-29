@@ -2,9 +2,8 @@
  * @file           : alerts.c
  * @brief          : Buzzer patterns and LED2.
  *
- * Buzzer: piezo on PB1 (Grove D6), driven by TIM3 CH4 PWM (AF2). The timer
- * makes the tone, so it doesn't wobble when the CPU is busy.
- * ARR = timer_clk / f - 1, CCR = half of that for a square wave.
+ * Buzzer: Grove active buzzer on A1 (PC4), plain GPIO high = sound.
+ * (BUZZER_SELF_TONE 0 = old passive-piezo option on D6/PB1 with TIM3 PWM.)
  *
  * Patterns are short beeps with gaps, never a continuous tone - a buzzing
  * case shakes the gyro and the board would never look "still".
@@ -20,11 +19,17 @@
 /* 0 = mute (useful while tuning the detector) */
 #define BUZZER_ENABLED      1
 
-/* 1 for an active buzzer that makes its own tone (plain GPIO on/off) */
-#define BUZZER_SELF_TONE    0
+/* 1 for an active buzzer that makes its own tone (plain GPIO on/off).
+ * The Grove buzzer is active, so no timer is needed. */
+#define BUZZER_SELF_TONE    1
 
-#define BUZZER_PIN          ARD_D6_Pin          /* PB1 */
+#if BUZZER_SELF_TONE
+#define BUZZER_PIN          ARD_A1_Pin          /* PC4, Grove A1 */
+#define BUZZER_PORT         ARD_A1_GPIO_Port
+#else
+#define BUZZER_PIN          ARD_D6_Pin          /* PB1, only pin here with TIM3 */
 #define BUZZER_PORT         ARD_D6_GPIO_Port
+#endif
 #define BUZZER_AF           GPIO_AF2_TIM3
 #define BUZZER_TIM          TIM3
 #define BUZZER_CHANNEL      TIM_CHANNEL_4
@@ -79,7 +84,9 @@ static const pattern_t patterns[] = {
 
 /*--------------------------- State ------------------------------------------*/
 
+#if !BUZZER_SELF_TONE
 static TIM_HandleTypeDef htim_buzzer;
+#endif
 static uint8_t timer_ready;
 
 static alert_mode_t mode;
@@ -124,7 +131,6 @@ static void buzzer_on(uint16_t hz)
 
     __HAL_TIM_SET_AUTORELOAD(&htim_buzzer, period - 1U);
     __HAL_TIM_SET_COMPARE(&htim_buzzer, BUZZER_CHANNEL, period / 2U);
-    HAL_TIM_PWM_Start(&htim_buzzer, BUZZER_CHANNEL);
 #endif
 #else
     (void)hz;
@@ -137,22 +143,25 @@ static void buzzer_off(void)
 #if BUZZER_SELF_TONE
     HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_RESET);
 #else
+    /* CCR = 0 keeps PB1 driven low. Stopping the channel instead would
+     * leave the pin floating, and a floating Grove buzzer input keeps
+     * sounding between beeps. */
     if (timer_ready)
     {
-        HAL_TIM_PWM_Stop(&htim_buzzer, BUZZER_CHANNEL);
+        __HAL_TIM_SET_COMPARE(&htim_buzzer, BUZZER_CHANNEL, 0U);
     }
 #endif
 #endif
 }
 
-/* PB1 as TIM3_CH4 and the PWM setup */
+/* buzzer pin: plain output, or PB1 as TIM3_CH4 with PWM */
 static void buzzer_init(void)
 {
     GPIO_InitTypeDef gpio = {0};
 
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
 #if BUZZER_SELF_TONE
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
     gpio.Pin = BUZZER_PIN;
     gpio.Mode = GPIO_MODE_OUTPUT_PP;
     gpio.Pull = GPIO_NOPULL;
@@ -162,12 +171,13 @@ static void buzzer_init(void)
 #else
     TIM_OC_InitTypeDef channel = {0};
 
+    __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_TIM3_CLK_ENABLE();
 
     /* PB1 as alternate function (TIM3) */
     gpio.Pin = BUZZER_PIN;
     gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_NOPULL;
+    gpio.Pull = GPIO_PULLDOWN;      /* held low even before the timer drives it */
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     gpio.Alternate = BUZZER_AF;
     HAL_GPIO_Init(BUZZER_PORT, &gpio);
@@ -185,11 +195,17 @@ static void buzzer_init(void)
     }
 
     channel.OCMode = TIM_OCMODE_PWM1;
-    channel.Pulse = 500;
+    channel.Pulse = 0;              /* silent until buzzer_on() */
     channel.OCPolarity = TIM_OCPOLARITY_HIGH;
     channel.OCFastMode = TIM_OCFAST_DISABLE;
 
     if (HAL_TIM_PWM_ConfigChannel(&htim_buzzer, &channel, BUZZER_CHANNEL) != HAL_OK)
+    {
+        return;
+    }
+
+    /* channel stays running from here on; on/off only changes CCR */
+    if (HAL_TIM_PWM_Start(&htim_buzzer, BUZZER_CHANNEL) != HAL_OK)
     {
         return;
     }

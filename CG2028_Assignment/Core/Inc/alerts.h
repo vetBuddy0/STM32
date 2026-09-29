@@ -2,7 +2,7 @@
  * @file           : alerts.h
  * @brief          : Buzzer patterns and LED2 blink rate.
  *
- * Buzzer is on PB1 (Grove D6), PWM from TIM3 CH4. Nothing here blocks, the
+ * Buzzer is on A1 (PC4), plain GPIO on/off. Nothing here blocks, the
  * pattern moves one step per call to alerts_tick().
  ******************************************************************************/
 #ifndef ALERTS_H
